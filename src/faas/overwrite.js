@@ -11,6 +11,8 @@ const CONFIG = require('../config')
 
 const http = require('http');
 
+const fileTypes = ['controller', 'service', 'route']
+
 
 module.exports = class FaasRunTime extends Koa {
   constructor() {
@@ -67,7 +69,6 @@ module.exports = class FaasRunTime extends Koa {
       faasObj = objectPath.get(this.route, routeName)
     } else {
       faasObj = {}
-
     }
     faasObj[obj.method.toLocaleUpperCase()] = compose(controllerFnArr)
     objectPath.set(this.route, routeName, faasObj)
@@ -107,8 +108,6 @@ async function getFileFormWebsite(filename, version) {
     path: '/assets/faas/' + version + '/' + filename + '/index.js'
   };
   return new Promise((resolve, reject) => {
-
-
     http.get(options, function (resp) {
       resp.on('data', function (chunk) {
 
@@ -122,13 +121,8 @@ async function getFileFormWebsite(filename, version) {
           if (err) {
             reject()
           }
-          else {
-            console.log('done');
-            resolve()
-          }
-
+          else resolve()
         });
-
       });
     }).on("error", function (e) {
       console.log("Got error: " + e.message);
@@ -156,26 +150,29 @@ function load(dir) {
 
 
 async function getFiles(curVersion) {
-  return new Promise((resolve, reject) => Promise.all([
-    getFileFormWebsite('controller', curVersion),
-    getFileFormWebsite('service', curVersion),
-    getFileFormWebsite('route', curVersion)
-  ]).then(
-    res => resolve(res),
-    err => reject(err),
-  ))
+  let promiseList = []
+  fileTypes.forEach(name =>
+    promiseList.push(getFileFormWebsite(name, curVersion))
+  )
+  return new Promise((resolve, reject) =>
+    Promise.all(promiseList).then(
+      res => resolve(res),
+      err => reject(err),
+    ))
 
 }
 
 async function syncFunction() {
-  cleanCache(require.resolve('../_functions/service'));
-  cleanCache(require.resolve('../_functions/controller'));
-  cleanCache(require.resolve('../_functions/route'));
-  return new Promise((resolve) => Promise.all([
-    load('_functions/service'),
-    load('_functions/controller'),
-    load('_functions/route'),
-  ]).then(_ => resolve()))
+  let promiseList = []
+  fileTypes.forEach(name => {
+    cleanCache(require.resolve('../_functions/' + name));
+    promiseList.push(load('_functions/' + name))
+  })
+
+  return new Promise((resolve,reject) => Promise.all(promiseList).then(
+    res => resolve(),
+    err => reject(err)
+    ))
 }
 
 function cleanCache(modulePath) {
