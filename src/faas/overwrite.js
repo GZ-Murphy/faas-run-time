@@ -18,31 +18,52 @@ module.exports = class FaasRunTime extends Koa {
   constructor() {
     super()
     this.baseInfo = objectPath({
-      verson: null,
-      modifyDate: null,
-      path: null
+      verson: '0000-0-00',//files verson
+      modifyDate: null,// update date
+      path: null,//copy from where
+      status: 'resolve'//resolve|pending|reject
     });
   }
 
   callback() {
     if (!this.listenerCount('error')) this.on('error', this.onerror);
+    //Sycn file, update require cache and createContext
     const handleRequest = async (req, res) => {
       const ctx = this.createContext(req, res);
       const curVersion = ctx.headers['faas-version'];
       if (curVersion !== this.baseInfo.get('verson')) {
-        let filesExist = true;
-        await getFiles(curVersion)
-          .catch((err) => filesExist = false);
-        if (filesExist) {
-          await syncFunction();
-          this.baseInfo.set('verson', curVersion);
-          this.baseInfo.set('modifyDate', new Date());
-          this.baseInfo.set('path', 'http:/' + CONFIG.FAAS.host + '/' + CONFIG.FAAS.port + '/assets/faas/' + curVersion + '/**/index.js');
-        }
+        const applyFaas = async () => {
+          // Lock files when copying
+          this.baseInfo.set('status', 'pending');
+          let filesExist = true;
+          await getFiles(curVersion).catch((err) => {
+            filesExist = false;
+            this.baseInfo.set('status', 'reject');
+          });
+          //If get files successful, update require cache. Or else use the old version;
+          if (filesExist) {
+            await syncFunction();
+            this.baseInfo.set('verson', curVersion);
+            this.baseInfo.set('modifyDate', new Date());
+            this.baseInfo.set('path', 'http:/' + CONFIG.FAAS.host + '/' + CONFIG.FAAS.port + '/assets/faas/' + curVersion + '/**/index.js');
+            this.baseInfo.set('status', 'resovle');
+          }
+          // End handleRequest
+          const fn = compose(this.middleware);
+          this.handleRequest(ctx, fn);
+        };
+        // Try to apply applyFaas, or else check files is locked every .5s
+        const tryInterval = setInterval(() => {
+          if (this.baseInfo.get('status') !== 'pending') {
+            clearInterval(tryInterval);
+            applyFaas();
+          }
+        }, 500);
+        // end try
+      } else {
+        const fn = compose(this.middleware);
+        this.handleRequest(ctx, fn);
       }
-
-      const fn = compose(this.middleware);
-      this.handleRequest(ctx, fn);
     };
     return handleRequest;
   }
@@ -77,7 +98,6 @@ module.exports = class FaasRunTime extends Koa {
   controller(name, obj) {
     assert(name && typeof name === 'string', 'controller `name` required')
     assert(obj && (['object', 'function'].includes(typeof obj)), 'controller second parameter should be a function or an object')
-
     objectPath.set(this.controller, name, obj)
   }
 
@@ -94,7 +114,6 @@ module.exports = class FaasRunTime extends Koa {
         }
       }
     }
-
     objectPath.set(this.service, name, obj)
   }
 }
@@ -110,7 +129,6 @@ async function getFileFormWebsite(filename, version) {
   return new Promise((resolve, reject) => {
     http.get(options, function (resp) {
       resp.on('data', function (chunk) {
-
         fileChunk += chunk
       });
       resp.on('end', function (chunk) {
@@ -159,7 +177,6 @@ async function getFiles(curVersion) {
       res => resolve(res),
       err => reject(err),
     ))
-
 }
 
 async function syncFunction() {
@@ -168,13 +185,12 @@ async function syncFunction() {
     cleanCache(require.resolve('../_functions/' + name));
     promiseList.push(load('_functions/' + name))
   })
-
-  return new Promise((resolve,reject) => Promise.all(promiseList).then(
+  return new Promise((resolve, reject) => Promise.all(promiseList).then(
     res => resolve(),
     err => reject(err)
-    ))
+  ))
 }
-
+//Del the cleanCache and del the reference
 function cleanCache(modulePath) {
   var module = require.cache[modulePath];
   // remove reference in module.parent  
